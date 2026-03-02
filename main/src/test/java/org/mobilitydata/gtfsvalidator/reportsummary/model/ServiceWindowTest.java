@@ -47,29 +47,26 @@ public class ServiceWindowTest {
     return new GtfsTrip.Builder().setCsvRowNumber(row).setServiceId(serviceId).build();
   }
 
-  private static GtfsCalendar calendar(int row, String serviceId, LocalDate start, LocalDate end) {
-    // Default calendar: service active every day of the week within the date range.
-    return calendar(row, serviceId, start, end, DayOfWeek.values());
-  }
-
   private static GtfsCalendar calendar(
-      int row, String serviceId, LocalDate start, LocalDate end, DayOfWeek... activeDays) {
-    java.util.Set<DayOfWeek> set = java.util.EnumSet.noneOf(DayOfWeek.class);
-    if (activeDays != null) {
-      java.util.Collections.addAll(set, activeDays);
+      int row, String serviceId, LocalDate start, LocalDate end, DayOfWeek... removedDays) {
+    java.util.Set<DayOfWeek> removed = java.util.EnumSet.noneOf(DayOfWeek.class);
+    if (removedDays != null) {
+      java.util.Collections.addAll(removed, removedDays);
     }
     return new GtfsCalendar.Builder()
         .setCsvRowNumber(row)
         .setServiceId(serviceId)
         .setStartDate(GtfsDate.fromLocalDate(start))
         .setEndDate(GtfsDate.fromLocalDate(end))
-        .setMonday(set.contains(DayOfWeek.MONDAY) ? 1 : 0)
-        .setTuesday(set.contains(DayOfWeek.TUESDAY) ? 1 : 0)
-        .setWednesday(set.contains(DayOfWeek.WEDNESDAY) ? 1 : 0)
-        .setThursday(set.contains(DayOfWeek.THURSDAY) ? 1 : 0)
-        .setFriday(set.contains(DayOfWeek.FRIDAY) ? 1 : 0)
-        .setSaturday(set.contains(DayOfWeek.SATURDAY) ? 1 : 0)
-        .setSunday(set.contains(DayOfWeek.SUNDAY) ? 1 : 0)
+        // By default, service is active every day in the range unless the day-of-week
+        // is explicitly listed as removed.
+        .setMonday(removed.contains(DayOfWeek.MONDAY) ? 0 : 1)
+        .setTuesday(removed.contains(DayOfWeek.TUESDAY) ? 0 : 1)
+        .setWednesday(removed.contains(DayOfWeek.WEDNESDAY) ? 0 : 1)
+        .setThursday(removed.contains(DayOfWeek.THURSDAY) ? 0 : 1)
+        .setFriday(removed.contains(DayOfWeek.FRIDAY) ? 0 : 1)
+        .setSaturday(removed.contains(DayOfWeek.SATURDAY) ? 0 : 1)
+        .setSunday(removed.contains(DayOfWeek.SUNDAY) ? 0 : 1)
         .build();
   }
 
@@ -106,6 +103,51 @@ public class ServiceWindowTest {
                 Optional.empty()))
         .isEqualTo(
             Optional.of(new ServiceWindow(LocalDate.of(2025, 1, 1), LocalDate.of(2025, 12, 31))));
+  }
+
+  @Test
+  public void get_singleCalendar_noActiveWeeRange() {
+    List<GtfsCalendar> calendars =
+        List.of(calendar(1, "s1", LocalDate.of(2025, 1, 1), LocalDate.of(2025, 12, 31)));
+
+    assertThat(
+            ServiceWindow.get(
+                GtfsTripTableContainer.forEntities(List.of(trip(0, "s1")), NOTICES),
+                Optional.of(GtfsCalendarTableContainer.forEntities(calendars, NOTICES)),
+                Optional.empty()))
+        .isEqualTo(
+            Optional.of(new ServiceWindow(LocalDate.of(2025, 1, 1), LocalDate.of(2025, 12, 31))));
+  }
+
+  @Test
+  public void get_singleCalendar_allWeekdaysDisabled_returnsEmpty() {
+    // Calendar covers a date range but has no active weekdays (all set to 0),
+    // so there is effectively no service even though start/end dates are present.
+    GtfsCalendar disabledCalendar =
+        new GtfsCalendar.Builder()
+            .setCsvRowNumber(1)
+            .setServiceId("s1")
+            .setStartDate(GtfsDate.fromLocalDate(LocalDate.of(2025, 1, 1)))
+            .setEndDate(GtfsDate.fromLocalDate(LocalDate.of(2025, 12, 31)))
+            .setMonday(0)
+            .setTuesday(0)
+            .setWednesday(0)
+            .setThursday(0)
+            .setFriday(0)
+            .setSaturday(0)
+            .setSunday(0)
+            .build();
+
+    GtfsTripTableContainer trips =
+        GtfsTripTableContainer.forEntities(List.of(trip(1, "s1")), NOTICES);
+
+    Optional<ServiceWindow> result =
+        ServiceWindow.get(
+            trips,
+            Optional.of(GtfsCalendarTableContainer.forEntities(List.of(disabledCalendar), NOTICES)),
+            Optional.empty());
+
+    assertThat(result).isEqualTo(Optional.empty());
   }
 
   /**
@@ -771,5 +813,56 @@ public class ServiceWindowTest {
     assertThat(result).isPresent();
     assertThat(result.get().startDate()).isEqualTo(LocalDate.of(2025, 5, 10));
     assertThat(result.get().endDate()).isAtLeast(LocalDate.of(2025, 5, 25));
+  }
+
+  /**
+   * calendar.txt has a service with no active weekdays (all zero), while calendar_dates provides
+   * SERVICE_ADDED entries for that service. One added date defines the start of the window and
+   * another defines the end; SERVICE_REMOVED entries in between do not affect the outer bounds.
+   */
+  @Test
+  public void get_bothTables_calendarNoActiveDays_windowFromAddedDates() {
+    // Calendar for s1 with a broad date range but no active weekdays.
+    GtfsCalendar disabledCalendar =
+        new GtfsCalendar.Builder()
+            .setCsvRowNumber(1)
+            .setServiceId("s1")
+            .setStartDate(GtfsDate.fromLocalDate(LocalDate.of(2025, 1, 1)))
+            .setEndDate(GtfsDate.fromLocalDate(LocalDate.of(2025, 12, 31)))
+            .setMonday(0)
+            .setTuesday(0)
+            .setWednesday(0)
+            .setThursday(0)
+            .setFriday(0)
+            .setSaturday(0)
+            .setSunday(0)
+            .build();
+
+    GtfsCalendarTableContainer calendarTable =
+        GtfsCalendarTableContainer.forEntities(List.of(disabledCalendar), NOTICES);
+
+    // calendar_dates for s1: two added dates (start and end) and one removed date in between.
+    LocalDate startAdded = LocalDate.of(2025, 3, 10);
+    LocalDate midRemoved = LocalDate.of(2025, 6, 1);
+    LocalDate endAdded = LocalDate.of(2025, 9, 20);
+
+    GtfsCalendarDateTableContainer calendarDateTable =
+        GtfsCalendarDateTableContainer.forEntities(
+            List.of(
+                calendarDate(1, "s1", startAdded, ADDED),
+                calendarDate(2, "s1", midRemoved, REMOVED),
+                calendarDate(3, "s1", endAdded, ADDED)),
+            NOTICES);
+
+    // Single trip using s1 so the serviceId is included in the computation.
+    GtfsTripTableContainer trips =
+        GtfsTripTableContainer.forEntities(List.of(trip(1, "s1")), NOTICES);
+
+    Optional<ServiceWindow> result =
+        ServiceWindow.get(trips, Optional.of(calendarTable), Optional.of(calendarDateTable));
+
+    // Even though calendar.txt provides no active weekdays, the SERVICE_ADDED entries in
+    // calendar_dates must define the service window: from the first added date to the last.
+    assertThat(result).isEqualTo(Optional.of(new ServiceWindow(startAdded, endAdded)));
   }
 }
