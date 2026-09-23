@@ -67,9 +67,7 @@ public abstract class GtfsInput implements Closeable {
     return new GtfsZipFileInput(zipFile, fileName);
   }
 
-  /**
-   * Check whether a ZIP file contains a subfolder with GTFS files.
-   */
+  /** Check whether a ZIP file contains a subfolder with GTFS files. */
   private static boolean containsGtfsFileInSubfolder(ZipFile zipFile) {
     Enumeration<ZipArchiveEntry> entries = zipFile.getEntries();
     while (entries.hasMoreElements()) {
